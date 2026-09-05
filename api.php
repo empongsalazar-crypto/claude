@@ -194,13 +194,17 @@ function send_email_message(string $to, string $subject, string $html): void
         $host = trim((string) (getenv('EASYSCHED_SMTP_HOST') ?: 'smtp.gmail.com'));
         $port = (int) (getenv('EASYSCHED_SMTP_PORT') ?: 587);
         $from = trim((string) (getenv('EASYSCHED_EMAIL_FROM') ?: $smtpUser));
-        $socket = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $error, 15);
+        $transport = $port === 465 ? 'ssl://' : 'tcp://';
+        $socket = @stream_socket_client($transport . $host . ':' . $port, $errno, $error, 15);
+        if (!$socket && $port === 587) {
+            $port = 465; $socket = @stream_socket_client('ssl://' . $host . ':465', $errno, $error, 15);
+        }
         if (!$socket) throw new ApiError(503, 'Gmail SMTP could not be reached.');
         stream_set_timeout($socket, 15);
         $smtpRead = static function () use ($socket): string { $reply = ''; while (($line = fgets($socket)) !== false) { $reply .= $line; if (strlen($line) < 4 || $line[3] === ' ') break; } return $reply; };
         $smtpWrite = static function (string $command) use ($socket): void { fwrite($socket, $command . "\r\n"); };
-        $smtpRead(); $smtpWrite('EHLO localhost'); $smtpRead(); $smtpWrite('STARTTLS'); $smtpRead();
-        if (!stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { fclose($socket); throw new ApiError(503, 'Gmail SMTP encryption could not be started.'); }
+        $smtpRead(); $smtpWrite('EHLO localhost'); $smtpRead();
+        if ($port !== 465) { $smtpWrite('STARTTLS'); $smtpRead(); if (!stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { fclose($socket); throw new ApiError(503, 'Gmail SMTP encryption could not be started.'); } }
         $smtpWrite('EHLO localhost'); $smtpRead(); $smtpWrite('AUTH LOGIN'); $smtpRead(); $smtpWrite(base64_encode($smtpUser)); $smtpRead(); $smtpWrite(base64_encode($smtpPass)); $auth = $smtpRead();
         if (strpos($auth, '235') === false) { fclose($socket); throw new ApiError(503, 'Gmail SMTP authentication failed. Check the app password.'); }
         $smtpWrite('MAIL FROM:<' . $smtpUser . '>'); $smtpRead(); $smtpWrite('RCPT TO:<' . $to . '>'); $smtpRead(); $smtpWrite('DATA'); $smtpRead();
