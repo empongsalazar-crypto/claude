@@ -188,6 +188,28 @@ function recent_login_security_alert(PDO $pdo, string $username): ?array
 
 function send_email_message(string $to, string $subject, string $html): void
 {
+    $smtpUser = trim((string) (getenv('EASYSCHED_SMTP_USERNAME') ?: ''));
+    $smtpPass = trim((string) (getenv('EASYSCHED_SMTP_PASSWORD') ?: ''));
+    if ($smtpUser !== '' && $smtpPass !== '') {
+        $host = trim((string) (getenv('EASYSCHED_SMTP_HOST') ?: 'smtp.gmail.com'));
+        $port = (int) (getenv('EASYSCHED_SMTP_PORT') ?: 587);
+        $from = trim((string) (getenv('EASYSCHED_EMAIL_FROM') ?: $smtpUser));
+        $socket = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $error, 15);
+        if (!$socket) throw new ApiError(503, 'Gmail SMTP could not be reached.');
+        stream_set_timeout($socket, 15);
+        $smtpRead = static function () use ($socket): string { $reply = ''; while (($line = fgets($socket)) !== false) { $reply .= $line; if (strlen($line) < 4 || $line[3] === ' ') break; } return $reply; };
+        $smtpWrite = static function (string $command) use ($socket): void { fwrite($socket, $command . "\r\n"); };
+        $smtpRead(); $smtpWrite('EHLO localhost'); $smtpRead(); $smtpWrite('STARTTLS'); $smtpRead();
+        if (!stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { fclose($socket); throw new ApiError(503, 'Gmail SMTP encryption could not be started.'); }
+        $smtpWrite('EHLO localhost'); $smtpRead(); $smtpWrite('AUTH LOGIN'); $smtpRead(); $smtpWrite(base64_encode($smtpUser)); $smtpRead(); $smtpWrite(base64_encode($smtpPass)); $auth = $smtpRead();
+        if (strpos($auth, '235') === false) { fclose($socket); throw new ApiError(503, 'Gmail SMTP authentication failed. Check the app password.'); }
+        $smtpWrite('MAIL FROM:<' . $smtpUser . '>'); $smtpRead(); $smtpWrite('RCPT TO:<' . $to . '>'); $smtpRead(); $smtpWrite('DATA'); $smtpRead();
+        $safeSubject = str_replace(["\r", "\n"], '', $subject); $safeFrom = str_replace(["\r", "\n"], '', $from);
+        $body = "From: {$safeFrom}\r\nTo: {$to}\r\nSubject: {$safeSubject}\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" . $html;
+        $smtpWrite(str_replace("\n.", "\n..", str_replace("\r\n", "\n", $body)) . "\r\n."); $sent = $smtpRead(); $smtpWrite('QUIT'); fclose($socket);
+        if (strpos($sent, '250') === false) throw new ApiError(503, 'Gmail could not accept the verification email.');
+        return;
+    }
     $apiKey = trim((string) (getenv('RESEND_API_KEY') ?: ''));
     $from = trim((string) (getenv('EASYSCHED_EMAIL_FROM') ?: ''));
     if ($apiKey === '' || $from === '') throw new ApiError(503, 'Email delivery is not configured yet.');
